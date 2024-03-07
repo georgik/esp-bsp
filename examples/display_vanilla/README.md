@@ -5,7 +5,7 @@ Vanilla example with BSP
 ## Build
 
 ```
-idf.py -DSDKCONFIG_DEFAULTS=sdkconfig.bsp.esp32_p4_function_ev_board build
+idf.py -D SDKCONFIG_DEFAULTS=sdkconfig.bsp.esp32_p4_function_ev_board build
 ```
 
 
