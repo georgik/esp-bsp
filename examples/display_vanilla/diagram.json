@@ -1,0 +1,17 @@
+{
+"version": 1,
+"author": "Uri Shaked",
+"editor": "wokwi",
+"parts": [
+  {
+    "type": "board-esp32-p4-preview",
+    "id": "esp",
+    "top": 184.37,
+    "left": -217.64,
+    "attrs": { "psramSize": "8" }
+  },
+  { "type": "board-ili9881c-8in", "id": "lcd1", "top": -76.8, "left": -67.2, "attrs": {} }
+],
+"connections": [ [ "esp:TX", "$serialMonitor:RX", "", [] ], [ "esp:RX", "$serialMonitor:TX", "", [] ] ],
+"dependencies": {}
+}
