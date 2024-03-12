@@ -1,9 +1,3 @@
-/*
- * SPDX-FileCopyrightText: 2021-2022 Espressif Systems (Shanghai) CO LTD
- *
- * SPDX-License-Identifier: CC0-1.0
- */
-
 #include <math.h>
 #include "lvgl.h"
 
@@ -12,97 +6,125 @@
 #endif
 
 // LVGL image declare
-LV_IMG_DECLARE(esp_logo)
-LV_IMG_DECLARE(esp_text)
+LV_IMG_DECLARE(esp_logo);
+LV_IMG_DECLARE(esp_text);
 
 typedef struct {
     lv_obj_t *scr;
     int count_val;
 } my_timer_context_t;
 
-static lv_obj_t *arc[3];
-static lv_obj_t *img_logo;
 static lv_obj_t *img_text;
-static lv_color_t arc_color[] = {
-    LV_COLOR_MAKE(232, 87, 116),
-    LV_COLOR_MAKE(126, 87, 162),
-    LV_COLOR_MAKE(90, 202, 228),
-};
+static lv_obj_t *slider; // Slider object
+static lv_obj_t *label_value; // Label to display the value
 
-static void anim_timer_cb(lv_timer_t *timer)
-{
-    my_timer_context_t *timer_ctx = (my_timer_context_t *) timer->user_data;
-    int count = timer_ctx->count_val;
-    lv_obj_t *scr = timer_ctx->scr;
+static void slider_event_handler(lv_event_t *e) {
+    lv_obj_t *slider = lv_event_get_target(e);
+    char buf[16];
+    int value = lv_slider_get_value(slider);
+    snprintf(buf, sizeof(buf), "%d°C", value);
+    lv_label_set_text(label_value, buf);
+}
 
-    // Play arc animation
-    if (count < 90) {
-        lv_coord_t arc_start = count > 0 ? (1 - cosf(count / 180.0f * PI)) * 270 : 0;
-        lv_coord_t arc_len = (sinf(count / 180.0f * PI) + 1) * 135;
+static void add_number_buttons(lv_obj_t *scr, lv_obj_t *ref_obj) {
+    int button_width = 50;  // Increased button width for better spacing
+    int button_height = 60; // Increased button height for full visibility of the text
 
-        for (size_t i = 0; i < sizeof(arc) / sizeof(arc[0]); i++) {
-            lv_arc_set_bg_angles(arc[i], arc_start, arc_len);
-            lv_arc_set_rotation(arc[i], (count + 120 * (i + 1)) % 360);
+    // Create a flex container
+    lv_obj_t *flex_cont = lv_obj_create(scr);
+    lv_obj_set_size(flex_cont, 5 * button_width + 4 * 10, button_height);
+    lv_obj_align_to(flex_cont, ref_obj, LV_ALIGN_OUT_TOP_MID, 0, -10);
+    lv_obj_set_flex_flow(flex_cont, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(flex_cont, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    
+    // Disable scrolling on the flex container
+    lv_obj_set_scrollbar_mode(flex_cont, LV_SCROLLBAR_MODE_OFF);
+
+    // Create and position the buttons within the flex container
+    for (int i = 0; i < 5; i++) {
+        lv_obj_t *btn = lv_btn_create(flex_cont);
+        lv_obj_set_size(btn, button_width, button_height);
+
+        // Create a label for the button
+        lv_obj_t *label = lv_label_create(btn);
+        lv_label_set_text_fmt(label, "%d", i + 1);
+
+        // Define and set the label's color
+        lv_color_t text_color;
+        switch (i) {
+            case 0: text_color = lv_color_make(0, 255, 0); break;    // green
+            case 1: text_color = lv_color_make(255, 255, 0); break;  // yellow
+            case 2: text_color = lv_color_make(255, 165, 0); break;  // orange
+            case 3: text_color = lv_color_make(255, 69, 0); break;   // light red
+            case 4: text_color = lv_color_make(255, 0, 0); break;    // red
+            default: text_color = lv_color_make(0, 0, 0); break;
         }
-    }
 
-    // Delete arcs when animation finished
-    if (count == 90) {
-        for (size_t i = 0; i < sizeof(arc) / sizeof(arc[0]); i++) {
-            lv_obj_del(arc[i]);
-        }
-
-        // Create new image and make it transparent
-        img_text = lv_img_create(scr);
-        lv_img_set_src(img_text, &esp_text);
-        lv_obj_set_style_img_opa(img_text, 0, 0);
-    }
-
-    // Move images when arc animation finished
-    if ((count >= 100) && (count <= 180)) {
-        lv_coord_t offset = (sinf((count - 140) * 2.25f / 90.0f) + 1) * 20.0f;
-        lv_obj_align(img_logo, LV_ALIGN_CENTER, 0, -offset);
-        lv_obj_align(img_text, LV_ALIGN_CENTER, 0, 2 * offset);
-        lv_obj_set_style_img_opa(img_text, offset / 40.0f * 255, 0);
-    }
-
-    // Delete timer when all animation finished
-    if ((count += 5) == 220) {
-        lv_timer_del(timer);
-    } else {
-        timer_ctx->count_val = count;
+        lv_obj_set_style_text_color(label, text_color, 0);
     }
 }
 
-void example_lvgl_demo_ui(lv_obj_t *scr)
-{
-    // Create image
-    img_logo = lv_img_create(scr);
-    lv_img_set_src(img_logo, &esp_logo);
-    lv_obj_center(img_logo);
 
-    // Create arcs
-    for (size_t i = 0; i < sizeof(arc) / sizeof(arc[0]); i++) {
-        arc[i] = lv_arc_create(scr);
+// Function to add icon buttons
+static void add_icon_buttons(lv_obj_t *scr, lv_obj_t *ref_obj) {
+    int button_width = 60;  // Button width
+    int button_height = 60; // Button height
 
-        // Set arc caption
-        lv_obj_set_size(arc[i], 220 - 30 * i, 220 - 30 * i);
-        lv_arc_set_bg_angles(arc[i], 120 * i, 10 + 120 * i);
-        lv_arc_set_value(arc[i], 0);
+    // Create a flex container for the icon buttons
+    lv_obj_t *icon_flex_cont = lv_obj_create(scr);
+    lv_obj_set_size(icon_flex_cont, 4 * button_width + 3 * 10, button_height); // Adjust width for 4 buttons
+    lv_obj_align_to(icon_flex_cont, ref_obj, LV_ALIGN_OUT_TOP_MID, 0, -button_height - 20); // Position above the previous buttons
+    lv_obj_set_flex_flow(icon_flex_cont, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(icon_flex_cont, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_scrollbar_mode(icon_flex_cont, LV_SCROLLBAR_MODE_OFF);
 
-        // Set arc style
-        lv_obj_remove_style(arc[i], NULL, LV_PART_KNOB);
-        lv_obj_set_style_arc_width(arc[i], 10, 0);
-        lv_obj_set_style_arc_color(arc[i], arc_color[i], 0);
-
-        // Make arc center
-        lv_obj_center(arc[i]);
-    }
-
-    // Create timer for animation
-    static my_timer_context_t my_tim_ctx = {
-        .count_val = -90,
+    // Define the icon symbols
+    const char *icon_symbols[4] = {
+        LV_SYMBOL_CLOUD,  // Cloud icon
+        LV_SYMBOL_SUN,    // Sun icon
+        LV_SYMBOL_SNOWFLAKE, // Snow icon
+        LV_SYMBOL_WIND // Using refresh symbol to represent wind
     };
-    my_tim_ctx.scr = scr;
-    lv_timer_create(anim_timer_cb, 20, &my_tim_ctx);
+
+    // Create and position the buttons within the icon flex container
+    for (int i = 0; i < 4; i++) {
+        lv_obj_t *btn = lv_btn_create(icon_flex_cont);
+        lv_obj_set_size(btn, button_width, button_height);
+
+        // Create a label for the button with the icon
+        lv_obj_t *label = lv_label_create(btn);
+        lv_label_set_text(label, icon_symbols[i]);
+    }
+}
+
+
+
+void example_lvgl_demo_ui(lv_obj_t *scr) {
+    // Create new image and make it transparent
+    img_text = lv_img_create(scr);
+    lv_img_set_src(img_text, &esp_text);
+    lv_obj_set_style_img_opa(img_text, 0, 0);
+
+    // Create a label for displaying the slider value
+    label_value = lv_label_create(scr);
+    lv_label_set_text(label_value, "0°C"); // Initialize with a default value
+
+    // Create a slider
+    slider = lv_slider_create(scr);
+    lv_obj_set_width(slider, 200); // Set the slider's width
+
+    // Position the slider at the bottom of the screen
+    lv_obj_align(slider, LV_ALIGN_BOTTOM_MID, 0, -10); // -10 pixels from the bottom for some padding
+
+    // Position the label above the slider
+    lv_obj_align_to(label_value, slider, LV_ALIGN_OUT_TOP_MID, 0, -10); // Align above slider with some padding
+
+    // Set the slider's range
+    lv_slider_set_range(slider, -20, 40);
+
+    // Add event callback to the slider
+    lv_obj_add_event_cb(slider, slider_event_handler, LV_EVENT_VALUE_CHANGED, NULL);
+
+    add_number_buttons(scr, label_value);
+    add_icon_buttons(scr, label_value);
 }
