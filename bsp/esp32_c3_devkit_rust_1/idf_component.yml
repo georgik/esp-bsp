@@ -1,0 +1,5 @@
+name: esp32_c3_devkit_rust_1
+version: "1.0.0"
+description: "Board support package for ESP32-C3-DevKit-RUST-1"
+targets:
+  - esp32c3

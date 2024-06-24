@@ -1,0 +1,1 @@
+| [ESP32-C3-DevKit-RUST-1](components/esp32_c3_devkit_rust_1) | ESP32-C3 | SPI display, I2C, GPIOs | <img src="docu/pics/esp32_c3_devkit_rust_1.png" width="150"> |
