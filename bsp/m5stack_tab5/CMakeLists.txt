@@ -8,7 +8,6 @@ idf_component_register(
         driver 
         esp_lcd
         esp_codec_dev
-        esp_lvgl_port
         spiffs
         fatfs
 	    esp_lcd_ili9881c

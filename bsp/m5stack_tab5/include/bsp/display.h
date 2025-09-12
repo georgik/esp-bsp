@@ -57,7 +57,14 @@ extern "C" {
  *
  */
 typedef struct {
-    int dummy;
+#ifdef CONFIG_IDF_TARGET_ESP32P4
+    struct {
+        mipi_dsi_phy_clock_source_t phy_clk_src; /*!< MIPI DSI PHY clock source */
+        uint32_t lane_bit_rate_mbps;             /*!< MIPI DSI lane bit rate in Mbps */
+    } dsi_bus;
+#else
+    size_t max_transfer_sz;                      /*!< Maximum transfer size for SPI displays */
+#endif
 } bsp_display_config_t;
 
 /**
