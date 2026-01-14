@@ -10,9 +10,16 @@ dependencies:
     override_path: ../../../bsp/m5stack_core_2
     rules:
       - if: target == "esp32"
-  m5stack_tab5:
+  # ESP32-P4 BSPs - only one can be active at a time due to component conflicts
+  # Uncomment m5stack_tab5 below to use that board instead
+  # m5stack_tab5:
+  #   version: '*'
+  #   override_path: ../../../bsp/m5stack_tab5
+  #   rules:
+  #     - if: target == "esp32p4"
+  esp32_p4_function_ev_board:
     version: '*'
-    override_path: ../../../bsp/m5stack_tab5
+    override_path: ../../../bsp/esp32_p4_function_ev_board
     rules:
       - if: target == "esp32p4"
   esp_jpeg: '*'
