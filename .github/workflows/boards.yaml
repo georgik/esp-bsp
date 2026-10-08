@@ -1,0 +1,71 @@
+# boards.yaml — curated list of ESPBrew aliases that map to ESP-BSP examples.
+#
+# This is the human-readable "single source of truth" for which ESPBrew cluster
+# aliases we can flash from CI. It is kept in sync with the leader's espbrew.toml
+# (the aliases registered there). The workflow itself derives the alias from each
+# build artifact name (see .github/workflows/espbrew-flash.yml, the repackage step),
+# so the alias MUST match what is registered in the live cluster.
+#
+# Use this file to:
+#   * keep the `boards` workflow input in sync with the cluster, and
+#   * generate a `flash-batch --manifest` if you prefer an explicit manifest over
+#     the default `flash-batch --artifacts-dir` auto-derivation.
+#
+# Notes:
+#   - `chip` is informational (espbrew reads offsets from build/flash_args, so no
+#     --chip is needed to flash).
+#   - `example` is the esp-bsp example the board is typically flashed from.
+#   - `registered: false` means "not yet in the live espbrew.toml" — add it to the
+#     cluster before flashing, or it will fail the batch.
+
+boards:
+  # --- ESP32-S3 (USB-JTAG/Serial, registered in espbrew.toml) ----------------
+  - alias: esp32-s3-box-3
+    chip: esp32s3
+    example: display
+    registered: true
+    snap: true            # has a camera aimed at its screen
+  - alias: esp32-s3-lcd-ev-board
+    chip: esp32s3
+    example: display
+    registered: true
+  - alias: esp32-s3-usb-otg
+    chip: esp32s3
+    example: generic_button_led
+    registered: true
+  - alias: m5stack-atom-s3
+    chip: esp32s3
+    example: generic_button_led
+    registered: true
+  - alias: m5stack-atom-s3r
+    chip: esp32s3
+    example: generic_button_led
+    registered: true
+
+  # --- Other chips (registered in espbrew.toml) ------------------------------
+  - alias: m5stack-core2
+    chip: esp32
+    example: generic_button_led
+    registered: true
+  - alias: esp32-c5-sensair-shuttle
+    chip: esp32c5
+    example: generic_button_led
+    registered: true
+  - alias: esp32-p4-function-ev-board
+    chip: esp32p4
+    example: display
+    registered: true       # ESP-IDF build flashes fine (the riscv Rust limit does not apply)
+  - alias: waveshare-esp32-s3-touch-lcd-1.28
+    chip: esp32s3
+    example: display
+    registered: true
+
+  # --- Registered in espbrew.toml but commented out / not wired up -----------
+  - alias: esp-vocat
+    chip: esp32s3
+    example: display
+    registered: false      # present but commented out in espbrew.toml
+  - alias: esp32-c3-lcdkit
+    chip: esp32c3
+    example: generic_button_led
+    registered: false      # commented out in espbrew.toml

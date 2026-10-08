@@ -1,0 +1,330 @@
+name: Flash & snap ESP-BSP via ESPBrew
+
+# Manual-only hardware workflow. Validates that ESP-BSP examples can be flashed
+# (and, optionally, snapshotted) with our new ESPBrew approach, replacing the old
+# "bspwall" method (pytest-embedded + /dev/boards/* on a privileged self-hosted runner).
+#
+#   build -> ubuntu + espressif/idf: run idf-build-apps to build the selected
+#            example(s), which emits one build_<bsp> dir per (example, BSP). A small
+#            shell step repackages each into a flash-files-<alias>/ artifact where
+#            <alias> is the build-dir name with _ -> - (so it matches the alias the
+#            ESPBrew cluster leader registered in espbrew.toml). Upload one artifact.
+#
+#   flash -> [espbrew] runner (a client to the ESPBrew cluster leader). Download the
+#            build artifact, keep only the boards in the `boards` input, then run
+#            `espbrew flash-batch --artifacts-dir …` which flashes every board in
+#            parallel (reading real offsets from build/flash_args) and monitors each
+#            for `monitor_duration` seconds, failing fast on an abort(). This is the
+#            core "can espbrew flash + boot-check the wall?" gate.
+#
+#   snap  -> [espbrew] runner (opt-in, gated on enable_snap). Per board in `snap_boards`,
+#            run `espbrew snap … --skip-flash …` to monitor-boot + capture a camera frame.
+#            Optional: a board without a camera aimed at it must never fail CI.
+#
+# Board identity moved from ESP-BSP's host-level /dev/boards/<board> mount to the
+# ESPBrew cluster's alias -> /dev/serial/by-id map. So the only thing the repo must
+# keep in sync with the live cluster is the list of ALIASES (see boards.yaml).
+#
+# Security: this workflow only triggers on manual dispatch, so pull requests
+# (including from forks) can never execute steps on the self-hosted hardware runner.
+# The snap job also carries a guard step as defense in depth. See the note at the
+# bottom of this file about the matching GitHub repository settings.
+
+on:
+  workflow_dispatch:
+    inputs:
+      idf_version:
+        description: 'ESP-IDF release to build with'
+        type: string
+        default: 'release-v6.1'
+      examples:
+        description: 'Comma-separated examples to build (empty = build all)'
+        type: string
+        default: 'generic_button_led,display'
+      boards:
+        description: >-
+          Comma-separated ESPBrew aliases to flash (empty = all built boards).
+          Must match aliases registered in the live cluster's espbrew.toml.
+        type: string
+        default: ''
+      enable_snap:
+        description: 'Also run the optional camera-capture (snap) job'
+        type: boolean
+        default: false
+      snap_boards:
+        description: 'Comma-separated aliases that have a camera aimed at them (e.g. esp32-s3-box-3)'
+        type: string
+        default: 'esp32-s3-box-3'
+      snap_duration:
+        description: 'Snap capture duration (seconds)'
+        type: string
+        default: '10'
+      monitor_duration:
+        description: 'Post-flash monitor duration (seconds)'
+        type: string
+        default: '10'
+
+# Self-hosted runners still need read access to the repository contents.
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Build the selected ESP-BSP examples and repackage each built
+  # examples/<example>/build_<bsp> dir into a flash-files-<alias>/ artifact that
+  # espbrew's flash-batch can auto-map (alias = build-dir name, _ -> -).
+  #
+  # We reuse idf-build-apps exactly as ESP-BSP's own build does, so the tricky
+  # BSP selection (SDKCONFIG_DEFAULTS=sdkconfig.bsp.<bsp> + the set-bsp manifest
+  # override in examples/bsp_ext.py) and the IDF-version gates in
+  # examples/.build-test-rules.yml keep working. The ESPBrew side only needs the
+  # resulting build_* images.
+  # ---------------------------------------------------------------------------
+  build:
+    name: Build ESP-BSP examples
+    runs-on: ubuntu-latest
+    container:
+      image: espressif/idf:${{ inputs.idf_version }}
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v6
+
+      - name: Build examples
+        # IDF_EXTRA_ACTIONS_PATH makes examples/bsp_ext.py (the set-bsp action)
+        # available to idf.py, exactly like build-run-applications.yml.
+        env:
+          EXAMPLES: "${{ inputs.examples }}"
+        shell: bash
+        run: |
+          set -euo pipefail
+          export IDF_PYTHON_CHECK_CONSTRAINTS=yes
+          ${IDF_PATH}/install.sh --enable-ci
+          source ${IDF_PATH}/export.sh
+
+          if [ -z "${EXAMPLES}" ]; then
+            echo "Building ALL examples…"
+            idf-build-apps build --path . --target all --collect-app-info build_info.json
+          else
+            IFS=',' read -r -a EX <<< "${EXAMPLES}"
+            for ex in "${EX[@]}"; do
+              ex="${ex//[[:space:]]/}"
+              [ -z "$ex" ] && continue
+              echo "Building example: $ex"
+              # Per-example build; idf-build-apps emits one build_<bsp> per BSP config.
+              idf-build-apps build --path "examples/$ex" --target all \
+                --collect-app-info "build_info_$ex.json"
+            done
+          fi
+
+      - name: Repackage build_* dirs into flash-files-<alias> artifacts
+        # Single source of truth for alias derivation: strip the leading "build_"
+        # from each build dir and normalize _ -> - so the name matches the alias
+        # registered in the ESPBrew cluster's espbrew.toml. If the live cluster
+        # uses a different spelling, change ONLY this normalization.
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf tmp-flash
+          mkdir -p tmp-flash
+          built=0
+          # Glob every built example output dir: examples/*/build_*/
+          for bd in examples/*/build_*/; do
+            [ -d "$bd" ] || continue
+            base="$(basename "$bd")"                 # e.g. build_esp32_s3_lcd_ev_board
+            alias="${base#build_}"                   # e.g. esp32_s3_lcd_ev_board
+            alias="${alias//[_ ]/-}"                 # -> esp32-s3-lcd-ev-board
+            # Skip empty aliases defensively.
+            [ -z "$alias" ] && continue
+            mkdir -p "tmp-flash/flash-files-$alias"
+            cp -a "$bd/." "tmp-flash/flash-files-$alias/"
+            built=$((built + 1))
+            echo "  $bd -> flash-files-$alias/  (espbrew reads flash_args there)"
+          done
+          if [ "$built" -eq 0 ]; then
+            echo "::error::no build_<bsp> directories were produced; nothing to flash"
+            exit 1
+          fi
+          echo "Repackaged $built board image(s) into tmp-flash/flash-files-*"
+          echo "alias derivation: build_<bsp> -> ${base#build_} (normalized _ -> -)"
+
+      - name: Upload flash artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: espbsp-flash
+          path: tmp-flash/
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # Flash + boot-check every requested board on the ESPBrew runner.
+  #
+  # The runner is only a client to the cluster leader, so espbrew reads the flash
+  # plan from each board's build/flash_args and selects the device by alias. No
+  # privileged container, no /dev/boards mount — just the alias.
+  # ---------------------------------------------------------------------------
+  flash:
+    name: Flash & monitor (ESPBrew)
+    needs: build
+    runs-on: [self-hosted, Linux, espbrew]
+    env:
+      MONITOR_DURATION: "${{ inputs.monitor_duration }}"
+      BOARDS_INPUT: "${{ inputs.boards }}"
+      ERROR_STRING: "abort() was called at PC"
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v6
+
+      - name: Download espbrew (arch-aware)
+        # The self-hosted runner may be x64 or arm; pick the matching release so we
+        # never land an amd64 binary on an arm64 host (opaque "exec format error").
+        run: |
+          set -euo pipefail
+          case "$(uname -m)" in
+            x86_64)  ESPBREW_ARCH="linux-amd64" ;;
+            aarch64) ESPBREW_ARCH="linux-arm64" ;;
+            *)       ESPBREW_ARCH="linux-amd64" ;;
+          esac
+          echo "Downloading espbrew-${ESPBREW_ARCH}"
+          curl -fsSL \
+            "https://github.com/georgik/espbrew-go/releases/download/v0.10.0/espbrew-${ESPBREW_ARCH}" \
+            -o espbrew
+          chmod +x ./espbrew
+          ./espbrew --version
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v7
+        with:
+          name: espbsp-flash
+          path: tmp-flash/
+
+      - name: Keep only the requested boards
+        # flash-batch --artifacts-dir derives one board per flash-files-<alias> dir.
+        # If `boards` is set, copy only those aliases into a filtered dir so unknown
+        # (unregistered) boards can't fail the batch. Empty input = keep everything.
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p keep
+          if [ -z "${BOARDS_INPUT}" ]; then
+            echo "boards input empty — flashing all built boards:"
+            ls -1 tmp-flash/
+            # Empty input = keep everything; copy all flash-files-* dirs into keep/.
+            cp -a tmp-flash/. keep/
+          else
+            IFS=',' read -r -a want <<< "${BOARDS_INPUT}"
+            for a in "${want[@]}"; do
+              a="${a//[[:space:]]/}"
+              [ -z "$a" ] && continue
+              if [ -d "tmp-flash/flash-files-$a" ]; then
+                cp -a "tmp-flash/flash-files-$a/" "keep/"
+                echo "keeping board: $a"
+              else
+                echo "::warning::board '$a' has no built artifact; skipping"
+              fi
+            done
+          fi
+          echo "flash-batch will run against: $(ls -1 keep | tr '\n' ' ')"
+
+      - name: Flash + monitor all boards
+        # flash-batch flashes every board in parallel (the leader's worker pool
+        # handles concurrency), reads real offsets from build/flash_args, monitors
+        # each board for MONITOR_DURATION seconds, and fails a board the instant its
+        # boot prints ERROR_STRING. Exits non-zero if any board fails.
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./espbrew --cluster "${ESPBREW_CLUSTER}" flash-batch \
+            --artifacts-dir keep \
+            --artifacts-layout "flash-files-<example>" \
+            --monitor-duration "${MONITOR_DURATION}" \
+            --exit-on-error "${ERROR_STRING}"
+
+  # ---------------------------------------------------------------------------
+  # Optional camera capture. Runs AFTER flash (each board is already flashed and
+  # running on the leader), so we use --skip-flash and let espbrew only monitor-boot
+  # + capture a frame. Optional: a board without a camera aimed at it must not fail
+  # CI, so the whole job is continue-on-error and each board is independent.
+  # ---------------------------------------------------------------------------
+  snap:
+    name: Snap (ESPBrew camera)
+    needs: flash
+    if: github.event.inputs.enable_snap == 'true'
+    runs-on: [self-hosted, Linux, espbrew]
+    continue-on-error: true
+    env:
+      SNAP_DURATION: "${{ inputs.snap_duration }}"
+      SNAP_BOARDS: "${{ inputs.snap_boards }}"
+    steps:
+      # --- Security: never run on untrusted PR / fork code -------------------
+      - name: Refuse to run on PRs / forks
+        if: github.event.pull_request != null || github.event_name != 'workflow_dispatch'
+        run: |
+          echo "::error::This hardware workflow only runs on manual dispatch."
+          exit 1
+
+      - name: Checkout repo
+        uses: actions/checkout@v6
+
+      - name: Download espbrew (arch-aware)
+        run: |
+          set -euo pipefail
+          case "$(uname -m)" in
+            x86_64)  ESPBREW_ARCH="linux-amd64" ;;
+            aarch64) ESPBREW_ARCH="linux-arm64" ;;
+            *)       ESPBREW_ARCH="linux-amd64" ;;
+          esac
+          echo "Downloading espbrew-${ESPBREW_ARCH}"
+          curl -fsSL \
+            "https://github.com/georgik/espbrew-go/releases/download/v0.10.0/espbrew-${ESPBREW_ARCH}" \
+            -o espbrew
+          chmod +x ./espbrew
+          ./espbrew --version
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v7
+        with:
+          name: espbsp-flash
+          path: tmp-flash/
+
+      - name: Snap each board (monitor + camera capture)
+        # One shell invocation, looped per board in snap_boards. --skip-flash keeps
+        # the already-flashed firmware running; espbrew monitors for SNAP_DURATION and
+        # writes a per-board zip to snapshots/<alias>.zip for the upload below.
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p snapshots
+          IFS=',' read -r -a boards <<< "${SNAP_BOARDS}"
+          for alias in "${boards[@]}"; do
+            alias="${alias//[[:space:]]/}"
+            [ -z "$alias" ] && continue
+            if [ ! -d "tmp-flash/flash-files-$alias" ]; then
+              echo "::warning::no build for snap board '$alias'; skipping"
+              continue
+            fi
+            echo ">>> snap $alias"
+            ( cd "tmp-flash/flash-files-$alias" \
+              && ./../../espbrew --cluster "${ESPBREW_CLUSTER}" snap \
+                   --filter-alias "$alias" \
+                   --skip-flash \
+                   --duration "${SNAP_DURATION}" \
+                   --save-dir snap-out \
+                   --zip "../snapshots/$alias.zip" ) || \
+              echo "::warning::snap failed for '$alias' (camera? board running?)"
+          done
+          echo "snap zips: $(ls -1 snapshots/*.zip 2>/dev/null | tr '\n' ' ' || true)"
+
+      - name: Upload snapshot zips
+        if: hashFiles('snapshots/*.zip') != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: snapshot-zips
+          path: snapshots/
+          retention-days: 30
+
+# ---------------------------------------------------------------------------
+# Repo setting to disable for full safety (matching the conways/spooky reference):
+#   Settings -> Actions -> "Allow GitHub Actions workflows and API requests from
+#   fork pull requests" should be UNCHECKED, so fork contributors cannot run
+#   arbitrary workflows on this repo's self-hosted hardware runner.
+# This workflow itself is workflow_dispatch-only and carries the snap guard above.
+# ---------------------------------------------------------------------------
