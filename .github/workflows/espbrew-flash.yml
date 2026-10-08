@@ -128,8 +128,20 @@ jobs:
             # gitignored (not tracked), so reset it with `rm -f` to force a fresh
             # component resolution and avoid a stale lock carrying over between BSPs.
             git checkout -- main/idf_component.yml 2>/dev/null || true
+            # Fresh component resolution per BSP. `dependencies.lock` is
+            # gitignored (not tracked) so it can't be reset with `git checkout`;
+            # `rm -f` forces re-resolution and avoids the
+            # `esp_lcd_ili9341` "both project_managed_components" conflict that
+            # `m5stack_core_2` hit. `rm -rf .deps` clears the project-level
+            # component-manager resolution cache too (safe no-op if it is
+            # build-dir-local); without it a stale BSP's components can leak
+            # into the next build.
             rm -f "examples/$example/dependencies.lock"
-            if ! idf.py build -DSDKCONFIG_DEFAULTS=sdkconfig.bsp.$bsp; then
+            rm -rf "examples/$example/.deps"
+            # Build into a BSP-specific dir with `-B build_$bsp` so the output lands
+            # in `examples/<example>/build_$bsp/` (idf.py defaults to `build/`, which
+            # would collide across BSPs and wouldn't match the copy step below).
+            if ! idf.py build -B "build_$bsp" -DSDKCONFIG_DEFAULTS=sdkconfig.bsp.$bsp; then
               echo "::warning::build failed for bsp $bsp (skipping; continuing)"
               cd ..
               continue
