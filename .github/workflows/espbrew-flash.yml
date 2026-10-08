@@ -85,6 +85,25 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v6
 
+      - name: Download espbrew (arch-aware)
+        # The build step repackages each build with `espbrew artifact pack` to
+        # hand off only the minimal espbrew-ready files (see the comment in the
+        # "Build supported boards" step). Download the same release the flash
+        # job uses so pack/unpack and flash-batch agree on the file layout.
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$(uname -m)" in
+            x86_64)  ESPBREW_ARCH="linux-amd64" ;;
+            aarch64) ESPBREW_ARCH="linux-arm64" ;;
+            *)       ESPBREW_ARCH="linux-amd64" ;;
+          esac
+          curl -fsSL \
+            "https://github.com/georgik/espbrew-go/releases/download/v0.10.0/espbrew-${ESPBREW_ARCH}" \
+            -o espbrew
+          chmod +x ./espbrew
+          ./espbrew --version
+
       - name: Build supported boards
         env:
           GITHUB_WORKSPACE: "${{ github.workspace }}"
@@ -146,12 +165,25 @@ jobs:
               continue
             fi
             cd "$GITHUB_WORKSPACE"
-            # Copy the build output to each espbrew alias dir. flash-batch maps
-            # each `flash-files-<alias>` dir to the board alias by stripping the
-            # `flash-files-` prefix, so the dir name IS the espbrew alias.
+            # Repackage the MINIMAL espbrew-ready files once per BSP with
+            # `espbrew artifact pack`, then mirror into each flash-files-<alias>/
+            # dir. `artifact pack` selects exactly CMakeLists.txt + sdkconfig +
+            # build/{flash_args,bootloader,partition_table,app} (no *.o objects,
+            # full ELF, or logs); copying the raw build/ dir produced a ~170MB
+            # artifact. The intermediate pack dir is written at the repo root
+            # (NOT inside tmp-flash/), so it is never uploaded and never seen by
+            # flash-batch — the upload ships only tmp-flash/ and the "keep" step
+            # copies only tmp-flash/. flash-batch detects the project in each
+            # flash-files-<alias>/ dir and reads build/flash_args + images; the
+            # dir name IS the espbrew alias (flash-batch strips the prefix).
+            pack="pack-$(basename examples/$example)"
+            if ! ./espbrew artifact pack --project "examples/$example" --out "$pack"; then
+              echo "::warning::artifact pack failed for $bsp (skipping; continuing)"
+              continue
+            fi
             for alias in ${aliases//,/ }; do
-              mkdir -p "tmp-flash/flash-files-$alias"
-              cp -a "examples/$example/build/." "tmp-flash/flash-files-$alias/"
+              rm -rf "tmp-flash/flash-files-$alias"
+              cp -a "$pack/." "tmp-flash/flash-files-$alias/"
               echo "  $bsp -> flash-files-$alias/"
             done
             built=$((built + 1))
