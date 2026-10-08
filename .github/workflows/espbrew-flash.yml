@@ -4,26 +4,27 @@ name: Flash & snap ESP-BSP via ESPBrew
 # (and, optionally, snapshotted) with our new ESPBrew approach, replacing the old
 # "bspwall" method (pytest-embedded + /dev/boards/* on a privileged self-hosted runner).
 #
-#   build -> ubuntu + espressif/idf: run idf-build-apps to build the selected
-#            example(s), which emits one build_<bsp> dir per (example, BSP). A small
-#            shell step repackages each into a flash-files-<alias>/ artifact where
-#            <alias> is the build-dir name with _ -> - (so it matches the alias the
-#            ESPBrew cluster leader registered in espbrew.toml). Upload one artifact.
+#   build -> ubuntu + espressif/idf: build ONLY the esp-bsp BSPs that ESPBrew
+#            supports (see .github/workflows/boards.yaml), one build_<bsp> dir
+#            per BSP. Each BSP is mapped to its ESPBrew alias (the names differ:
+#            esp-bsp `esp-box-3` -> espbrew `esp32-s3-box-3`). The output is
+#            repackaged into flash-files-<alias>/ artifacts.
 #
-#   flash -> [espbrew] runner (a client to the ESPBrew cluster leader). Download the
-#            build artifact, keep only the boards in the `boards` input, then run
-#            `espbrew flash-batch --artifacts-dir …` which flashes every board in
-#            parallel (reading real offsets from build/flash_args) and monitors each
-#            for `monitor_duration` seconds, failing fast on an abort(). This is the
-#            core "can espbrew flash + boot-check the wall?" gate.
+#   flash -> [espbrew] runner (a client to the ESPBrew cluster leader). Download
+#            the build artifact, keep only the boards in the `boards` input, then
+#            run `espbrew flash-batch --artifacts-dir …` which flashes every board
+#            in parallel (reading real offsets from build/flash_args) and monitors
+#            each for `monitor_duration` seconds, failing fast on an abort(). This
+#            is the core "can espbrew flash + boot-check the wall?" gate.
 #
-#   snap  -> [espbrew] runner (opt-in, gated on enable_snap). Per board in `snap_boards`,
-#            run `espbrew snap … --skip-flash …` to monitor-boot + capture a camera frame.
-#            Optional: a board without a camera aimed at it must never fail CI.
+#   snap  -> [espbrew] runner (opt-in, gated on enable_snap). Per board in
+#            `snap_boards`, run `espbrew snap … --skip-flash …` to monitor-boot
+#            + capture a camera frame. Optional: a board without a camera aimed
+#            at it must never fail CI.
 #
 # Board identity moved from ESP-BSP's host-level /dev/boards/<board> mount to the
-# ESPBrew cluster's alias -> /dev/serial/by-id map. So the only thing the repo must
-# keep in sync with the live cluster is the list of ALIASES (see boards.yaml).
+# ESPBrew cluster's alias -> /dev/serial/by-id map. The only thing the repo must
+# keep in sync with the live cluster is boards.yaml (esp-bsp BSP -> espbrew alias).
 #
 # Security: this workflow only triggers on manual dispatch, so pull requests
 # (including from forks) can never execute steps on the self-hosted hardware runner.
@@ -37,10 +38,6 @@ on:
         description: 'ESP-IDF release to build with'
         type: string
         default: 'release-v6.1'
-      examples:
-        description: 'Comma-separated examples to build (empty = build all)'
-        type: string
-        default: 'generic_button_led,display'
       boards:
         description: >-
           Comma-separated ESPBrew aliases to flash (empty = all built boards).
@@ -70,18 +67,17 @@ permissions:
 
 jobs:
   # ---------------------------------------------------------------------------
-  # Build the selected ESP-BSP examples and repackage each built
-  # examples/<example>/build_<bsp> dir into a flash-files-<alias>/ artifact that
-  # espbrew's flash-batch can auto-map (alias = build-dir name, _ -> -).
+  # Build ONLY the esp-bsp BSPs that ESPBrew supports (see boards.yaml), and
+  # repackage each build_<bsp> dir into a flash-files-<alias>/ artifact where
+  # <alias> is the ESPBrew alias from boards.yaml.
   #
-  # We reuse idf-build-apps exactly as ESP-BSP's own build does, so the tricky
-  # BSP selection (SDKCONFIG_DEFAULTS=sdkconfig.bsp.<bsp> + the set-bsp manifest
-  # override in examples/bsp_ext.py) and the IDF-version gates in
-  # examples/.build-test-rules.yml keep working. The ESPBrew side only needs the
-  # resulting build_* images.
+  # We build each BSP explicitly with `idf.py build -DSDKCONFIG_DEFAULTS=…` so
+  # the set-bsp action (examples/bsp_ext.py, enabled via IDF_EXTRA_ACTIONS_PATH)
+  # picks exactly that BSP. This avoids building the dozens of unsupported BSPs
+  # (and the examples that fail to build for them).
   # ---------------------------------------------------------------------------
   build:
-    name: Build ESP-BSP examples
+    name: Build ESPBrew-supported boards
     runs-on: ubuntu-latest
     container:
       image: espressif/idf:${{ inputs.idf_version }}
@@ -89,63 +85,70 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v6
 
-      - name: Build examples
-        # IDF_EXTRA_ACTIONS_PATH makes examples/bsp_ext.py (the set-bsp action)
-        # available to idf.py, exactly like build-run-applications.yml.
+      - name: Build supported boards
         env:
-          EXAMPLES: "${{ inputs.examples }}"
+          GITHUB_WORKSPACE: "${{ github.workspace }}"
         shell: bash
         run: |
           set -euo pipefail
           export IDF_PYTHON_CHECK_CONSTRAINTS=yes
+          # Makes examples/bsp_ext.py (the set-bsp action) available to idf.py,
+          # exactly like build-run-applications.yml.
+          export IDF_EXTRA_ACTIONS_PATH="${GITHUB_WORKSPACE}/examples"
+          # Avoid git's "detected dubious ownership" when the checkout is owned by a
+          # different uid than the runner (the earlier run tripped on this).
+          git config --global --add safe.directory "${GITHUB_WORKSPACE}"
           ${IDF_PATH}/install.sh --enable-ci
           source ${IDF_PATH}/export.sh
 
-          if [ -z "${EXAMPLES}" ]; then
-            echo "Building ALL examples…"
-            idf-build-apps build --path . --target all --collect-app-info build_info.json
-          else
-            IFS=',' read -r -a EX <<< "${EXAMPLES}"
-            for ex in "${EX[@]}"; do
-              ex="${ex//[[:space:]]/}"
-              [ -z "$ex" ] && continue
-              echo "Building example: $ex"
-              # Per-example build; idf-build-apps emits one build_<bsp> per BSP config.
-              idf-build-apps build --path "examples/$ex" --target all \
-                --collect-app-info "build_info_$ex.json"
-            done
-          fi
-
-      - name: Repackage build_* dirs into flash-files-<alias> artifacts
-        # Single source of truth for alias derivation: strip the leading "build_"
-        # from each build dir and normalize _ -> - so the name matches the alias
-        # registered in the ESPBrew cluster's espbrew.toml. If the live cluster
-        # uses a different spelling, change ONLY this normalization.
-        shell: bash
-        run: |
-          set -euo pipefail
           rm -rf tmp-flash
           mkdir -p tmp-flash
+
+          # Parse boards.yaml into: bsp<TAB>alias1,alias2<TAB>example<TAB>snap
+          python3 - <<'PY' > /tmp/boards.txt
+          import yaml
+          d = yaml.safe_load(open('.github/workflows/boards.yaml'))
+          for b in d['boards']:
+              aliases = ','.join(a.strip() for a in b['espbrew_alias'].split(','))
+              snap = 'true' if b.get('snap') else 'false'
+              print('\t'.join([b['bsp'], aliases, b.get('example', 'display'), snap]))
+          PY
+
           built=0
-          # Glob every built example output dir: examples/*/build_*/
-          for bd in examples/*/build_*/; do
-            [ -d "$bd" ] || continue
-            base="$(basename "$bd")"                 # e.g. build_esp32_s3_lcd_ev_board
-            alias="${base#build_}"                   # e.g. esp32_s3_lcd_ev_board
-            alias="${alias//[_ ]/-}"                 # -> esp32-s3-lcd-ev-board
-            # Skip empty aliases defensively.
-            [ -z "$alias" ] && continue
-            mkdir -p "tmp-flash/flash-files-$alias"
-            cp -a "$bd/." "tmp-flash/flash-files-$alias/"
+          while IFS=$'\t' read -r bsp aliases example snap; do
+            [ -z "$bsp" ] && continue
+            echo ">>> building $example / bsp $bsp -> aliases: $aliases"
+            if [ ! -d "examples/$example" ]; then
+              echo "::warning::example $example not found; skipping"
+              continue
+            fi
+            cd "examples/$example"
+            # set-bsp rewrites main/idf_component.yml (tracked) before each build,
+            # and dependencies.lock is regenerated on every build but is
+            # gitignored (not tracked), so reset it with `rm -f` to force a fresh
+            # component resolution and avoid a stale lock carrying over between BSPs.
+            git checkout -- main/idf_component.yml 2>/dev/null || true
+            rm -f "examples/$example/dependencies.lock"
+            if ! idf.py build -DSDKCONFIG_DEFAULTS=sdkconfig.bsp.$bsp; then
+              echo "::warning::build failed for bsp $bsp (skipping; continuing)"
+              cd ..
+              continue
+            fi
+            cd ..
+            # Copy the build output to each espbrew alias dir.
+            for alias in ${aliases//,/ }; do
+              mkdir -p "tmp-flash/flash-files-$alias"
+              cp -a "examples/$example/build_$bsp/." "tmp-flash/flash-files-$alias/"
+              echo "  $bsp -> flash-files-$alias/"
+            done
             built=$((built + 1))
-            echo "  $bd -> flash-files-$alias/  (espbrew reads flash_args there)"
-          done
+          done < /tmp/boards.txt
+
           if [ "$built" -eq 0 ]; then
-            echo "::error::no build_<bsp> directories were produced; nothing to flash"
+            echo "::error::no boards built; nothing to flash"
             exit 1
           fi
-          echo "Repackaged $built board image(s) into tmp-flash/flash-files-*"
-          echo "alias derivation: build_<bsp> -> ${base#build_} (normalized _ -> -)"
+          echo "Built $built board image(s) into tmp-flash/flash-files-*"
 
       - name: Upload flash artifacts
         uses: actions/upload-artifact@v7

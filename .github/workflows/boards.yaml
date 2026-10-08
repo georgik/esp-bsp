@@ -1,71 +1,52 @@
-# boards.yaml — curated list of ESPBrew aliases that map to ESP-BSP examples.
+# boards.yaml — esp-bsp -> ESPBrew alias mapping for the flash job.
 #
-# This is the human-readable "single source of truth" for which ESPBrew cluster
-# aliases we can flash from CI. It is kept in sync with the leader's espbrew.toml
-# (the aliases registered there). The workflow itself derives the alias from each
-# build artifact name (see .github/workflows/espbrew-flash.yml, the repackage step),
-# so the alias MUST match what is registered in the live cluster.
+# This is the single source of truth for the self-hosted `flash` job. It maps
+# each ESP-BSP *BSP directory* (the `build_<bsp>` dir that `idf.py build`
+# emits) to the ESPBrew *alias(es)* registered in the live cluster's espbrew.toml.
 #
-# Use this file to:
-#   * keep the `boards` workflow input in sync with the cluster, and
-#   * generate a `flash-batch --manifest` if you prefer an explicit manifest over
-#     the default `flash-batch --artifacts-dir` auto-derivation.
+# WHY THIS FILE EXISTS (important):
+#   ESP-BSP's BSP directory names do NOT match ESPBrew's alias spelling. The
+#   workflow cannot just normalise `_` -> `-`; it needs an explicit map, e.g.
+#     esp-bsp `esp-box-3`          -> espbrew `esp32-s3-box-3`
+#     esp-bsp `m5_atom_s3`          -> espbrew `m5stack-atom-s3` (+ -r)
+#     esp-bsp `m5stack_core_2`      -> espbrew `m5stack-core2`
+#     esp-bsp `esp32_s3_lcd_ev_board` -> espbrew `esp32-s3-lcd-ev-board`  (matches)
 #
-# Notes:
-#   - `chip` is informational (espbrew reads offsets from build/flash_args, so no
-#     --chip is needed to flash).
-#   - `example` is the esp-bsp example the board is typically flashed from.
-#   - `registered: false` means "not yet in the live espbrew.toml" — add it to the
-#     cluster before flashing, or it will fail the batch.
+# BOARD SELECTION:
+#   Only the boards that are BOTH (a) registered in espbrew AND (b) enabled in
+#   the other three espbrew repos (conways / spooky / raylib) are listed here.
+#   That common set is 5 boards across 4 BSPs (atom-s3 and atom-s3r share the
+#   `m5_atom_s3` BSP). The 6th board conways uses (waveshare
+#   esp32-s3-touch-lcd-1.28) is intentionally NOT included because spooky and
+#   raylib do not flash it — add it back only if you want it everywhere.
+#
+# Each entry:
+#   bsp:          esp-bsp BSP directory name (build_<bsp> is produced by the build)
+#   espbrew_alias: comma-separated espbrew alias(es) for this BSP
+#   example:      esp-bsp example dir that ships this BSP (examples/<example>)
+#   snap:         optional; set true if a camera is aimed at this board
 
 boards:
-  # --- ESP32-S3 (USB-JTAG/Serial, registered in espbrew.toml) ----------------
-  - alias: esp32-s3-box-3
-    chip: esp32s3
+  # --- esp32-s3-box-3 --------------------------------------------------------
+  - bsp: esp-box-3
+    espbrew_alias: esp32-s3-box-3
     example: display
-    registered: true
-    snap: true            # has a camera aimed at its screen
-  - alias: esp32-s3-lcd-ev-board
-    chip: esp32s3
-    example: display
-    registered: true
-  - alias: esp32-s3-usb-otg
-    chip: esp32s3
-    example: generic_button_led
-    registered: true
-  - alias: m5stack-atom-s3
-    chip: esp32s3
-    example: generic_button_led
-    registered: true
-  - alias: m5stack-atom-s3r
-    chip: esp32s3
-    example: generic_button_led
-    registered: true
+    snap: true          # has a camera aimed at its screen
 
-  # --- Other chips (registered in espbrew.toml) ------------------------------
-  - alias: m5stack-core2
-    chip: esp32
-    example: generic_button_led
-    registered: true
-  - alias: esp32-c5-sensair-shuttle
-    chip: esp32c5
-    example: generic_button_led
-    registered: true
-  - alias: esp32-p4-function-ev-board
-    chip: esp32p4
+  # --- esp32-s3-lcd-ev-board -------------------------------------------------
+  - bsp: esp32_s3_lcd_ev_board
+    espbrew_alias: esp32-s3-lcd-ev-board
     example: display
-    registered: true       # ESP-IDF build flashes fine (the riscv Rust limit does not apply)
-  - alias: waveshare-esp32-s3-touch-lcd-1.28
-    chip: esp32s3
-    example: display
-    registered: true
 
-  # --- Registered in espbrew.toml but commented out / not wired up -----------
-  - alias: esp-vocat
-    chip: esp32s3
+  # --- m5stack-atom-s3 AND m5stack-atom-s3r ----------------------------------
+  # Both are separate espbrew aliases (distinct USB-JTAG serial ids) but share
+  # the single esp-bsp `m5_atom_s3` BSP. The build emits one `build_m5_atom_s3`
+  # which is copied to BOTH alias dirs, so both boards flash the same demo.
+  - bsp: m5_atom_s3
+    espbrew_alias: "m5stack-atom-s3,m5stack-atom-s3r"
     example: display
-    registered: false      # present but commented out in espbrew.toml
-  - alias: esp32-c3-lcdkit
-    chip: esp32c3
-    example: generic_button_led
-    registered: false      # commented out in espbrew.toml
+
+  # --- m5stack-core2 ---------------------------------------------------------
+  - bsp: m5stack_core_2
+    espbrew_alias: m5stack-core2
+    example: display
